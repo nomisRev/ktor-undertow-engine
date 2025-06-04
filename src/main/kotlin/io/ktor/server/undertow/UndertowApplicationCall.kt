@@ -9,6 +9,7 @@ import io.ktor.server.engine.*
 import io.undertow.server.*
 import kotlinx.coroutines.*
 import kotlin.coroutines.*
+
 import io.ktor.utils.io.*
 
 /**
@@ -27,18 +28,5 @@ internal class UndertowApplicationCall(
 
     init {
         putResponseAttribute()
-    }
-
-    suspend fun finish() {
-        try {
-            response.finishResponse()
-        } finally {
-            if (!exchange.isResponseStarted) {
-                exchange.statusCode = 200
-            }
-            if (!exchange.isComplete) {
-                exchange.endExchange()
-            }
-        }
     }
 }

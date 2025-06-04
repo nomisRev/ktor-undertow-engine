@@ -53,18 +53,8 @@ internal class UndertowApplicationResponse(
         }
         return _responseChannel!!
     }
-
-    suspend fun ensureResponseSent() {
-        if (!responseSent) {
-            responseSent = true
-            if (_status == null) {
-                setStatus(HttpStatusCode.OK)
-            }
-        }
-    }
     
     suspend fun finishResponse() {
-        ensureResponseSent()
         // Ensure response channel is flushed and closed if it was created
         _responseChannel?.let { channel ->
             try {

@@ -49,7 +49,6 @@ public class UndertowApplicationEngine(
     }
 
     private var server: Undertow? = null
-    private val application: Application by lazy(applicationProvider)
 
     override fun start(wait: Boolean): UndertowApplicationEngine {
         val undertowBuilder = Undertow.builder()
@@ -70,7 +69,10 @@ public class UndertowApplicationEngine(
             }
         }
 
-        val handler = UndertowApplicationCallHandler(application, environment, monitor, developmentMode)
+        val userContext = applicationProvider().coroutineContext +
+                          DefaultUncaughtExceptionHandler(environment.log)
+
+        val handler = UndertowApplicationCallHandler(applicationProvider(), environment, userContext)
         server = undertowBuilder.setHandler(handler).build()
         
         server?.start()

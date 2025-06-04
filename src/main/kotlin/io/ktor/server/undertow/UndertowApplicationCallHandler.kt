@@ -7,11 +7,11 @@ package io.ktor.server.undertow
 import io.ktor.events.*
 import io.ktor.http.*
 import io.ktor.server.application.*
-import io.ktor.server.engine.*
+import io.ktor.server.response.respond
 import io.ktor.util.pipeline.*
 import io.undertow.server.*
 import kotlinx.coroutines.*
-import java.util.concurrent.Executors
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Undertow [HttpHandler] that bridges Undertow requests to Ktor pipeline execution
@@ -19,38 +19,27 @@ import java.util.concurrent.Executors
 internal class UndertowApplicationCallHandler(
     private val application: Application,
     private val environment: ApplicationEnvironment,
-    private val monitor: Events,
-    private val developmentMode: Boolean
-) : HttpHandler {
-
-    private val coroutineScope = CoroutineScope(
-        Dispatchers.IO + SupervisorJob() + CoroutineName("undertow-handler")
-    )
-
+    override val coroutineContext: CoroutineContext
+) : HttpHandler, CoroutineScope {
     override fun handleRequest(exchange: HttpServerExchange) {
-        if (exchange.isInIoThread) {
-            exchange.dispatch(this)
-            return
-        }
-
         // Create Ktor application call from Undertow exchange
         val call = UndertowApplicationCall(application, exchange)
         
-        // Execute the call synchronously to ensure proper completion
+        launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                application.execute(call)
+            } catch (error: Throwable) {
+
+                environment.log.error("Application ${application::class.java} cannot fulfill the request", error)
+                call.respond(HttpStatusCode.InternalServerError)
+            }
+        }
         runBlocking {
             try {
                 application.execute(call)
             } catch (throwable: Throwable) {
-                try {
-                    call.response.status(HttpStatusCode.InternalServerError)
-                } catch (ignored: Exception) {
-                }
-                if (developmentMode) {
-                    throwable.printStackTrace()
-                }
+                call.response.status(HttpStatusCode.InternalServerError)
                 environment.log.error("Request processing failed", throwable)
-            } finally {
-                call.finish()
             }
         }
     }

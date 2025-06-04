@@ -22,24 +22,33 @@ internal class UndertowApplicationCallHandler(
     override val coroutineContext: CoroutineContext
 ) : HttpHandler, CoroutineScope {
     override fun handleRequest(exchange: HttpServerExchange) {
+        // Dispatch to worker thread to avoid blocking I/O thread
+        if (exchange.isInIoThread) {
+            exchange.dispatch(this)
+            return
+        }
+        
         // Create Ktor application call from Undertow exchange
         val call = UndertowApplicationCall(application, exchange)
         
-        launch(start = CoroutineStart.UNDISPATCHED) {
+        // Use runBlocking to ensure the exchange doesn't complete until processing is done
+        runBlocking(coroutineContext) {
             try {
                 application.execute(call)
             } catch (error: Throwable) {
-
                 environment.log.error("Application ${application::class.java} cannot fulfill the request", error)
-                call.respond(HttpStatusCode.InternalServerError)
-            }
-        }
-        runBlocking {
-            try {
-                application.execute(call)
-            } catch (throwable: Throwable) {
-                call.response.status(HttpStatusCode.InternalServerError)
-                environment.log.error("Request processing failed", throwable)
+                try {
+                    call.respond(HttpStatusCode.InternalServerError)
+                } catch (responseError: Throwable) {
+                    environment.log.error("Failed to send error response", responseError)
+                }
+            } finally {
+                // Ensure response is properly finished
+                try {
+                    (call.response as UndertowApplicationResponse).finishResponse()
+                } catch (finishError: Throwable) {
+                    environment.log.debug("Error finishing response", finishError)
+                }
             }
         }
     }

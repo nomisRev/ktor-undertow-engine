@@ -49,7 +49,7 @@ internal class UndertowApplicationResponse(
             if (!exchange.isBlocking) {
                 exchange.startBlocking()
             }
-            _responseChannel = exchange.outputStream.toByteWriteChannel()
+            _responseChannel = exchange.outputStream.toByteWriteChannel(this@UndertowApplicationResponse)
         }
         return _responseChannel!!
     }
@@ -87,14 +87,14 @@ private class UndertowResponseHeaders(private val exchange: HttpServerExchange) 
 }
 
 /**
- * Extension to convert Undertow's OutputStream to ByteWriteChannel
+ * Extension to convert Undertow's OutputStream to ByteWriteChannel using structured concurrency
  */
-private fun java.io.OutputStream.toByteWriteChannel(): ByteWriteChannel {
+private fun java.io.OutputStream.toByteWriteChannel(scope: CoroutineScope): ByteWriteChannel {
     val outputStream = this
     val channel = ByteChannel()
     
-    // Use a completely synchronous approach - write directly to OutputStream
-    val job = CoroutineScope(Dispatchers.IO).launch {
+    // Use structured concurrency with proper parent scope
+    val job = scope.launch(Dispatchers.IO) {
         try {
             val buffer = ByteArray(8192)
             while (!channel.isClosedForRead) {
@@ -119,14 +119,12 @@ private fun java.io.OutputStream.toByteWriteChannel(): ByteWriteChannel {
         }
     }
     
-    // Return a wrapper that blocks until the job completes
+    // Return a wrapper that properly handles completion
     return object : ByteWriteChannel by channel {
         override suspend fun flushAndClose() {
             channel.flushAndClose()
-            // Block until all data is written
-            runBlocking {
-                job.join()
-            }
+            // Wait for completion without blocking
+            job.join()
         }
     }
 }

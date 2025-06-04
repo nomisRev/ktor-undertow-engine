@@ -21,7 +21,7 @@ internal class UndertowApplicationCall(
 ) : BaseApplicationCall(application) {
 
     override val coroutineContext: CoroutineContext = 
-        SupervisorJob() + Dispatchers.Unconfined + CoroutineName("undertow-call")
+        SupervisorJob() + Dispatchers.Default + CoroutineName("undertow-call")
 
     override val request: UndertowApplicationRequest = UndertowApplicationRequest(this, exchange)
     override val response: UndertowApplicationResponse = UndertowApplicationResponse(this, exchange)

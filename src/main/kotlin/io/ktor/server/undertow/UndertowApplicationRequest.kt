@@ -34,7 +34,7 @@ internal class UndertowApplicationRequest(
         }
         
         if (exchange.isRequestChannelAvailable) {
-            exchange.inputStream.toByteReadChannel()
+            exchange.inputStream.toByteReadChannel(this@UndertowApplicationRequest)
         } else {
             ByteReadChannel.Empty
         }
@@ -121,11 +121,11 @@ private class UndertowRequestConnectionPoint(private val exchange: HttpServerExc
 }
 
 /**
- * Extension to convert Undertow's InputStream to ByteReadChannel
+ * Extension to convert Undertow's InputStream to ByteReadChannel using structured concurrency
  */
-private fun java.io.InputStream.toByteReadChannel(): ByteReadChannel {
+private fun java.io.InputStream.toByteReadChannel(scope: CoroutineScope): ByteReadChannel {
     val inputStream = this
-    return GlobalScope.writer(Dispatchers.IO) {
+    return scope.writer(Dispatchers.IO) {
         val buffer = ByteArray(8192)
         try {
             while (true) {

@@ -15,24 +15,33 @@ import kotlin.coroutines.CoroutineContext
 
 /**
  * Undertow [HttpHandler] that bridges Undertow requests to Ktor pipeline execution
+ * using structured concurrency and proper context preservation.
  */
 internal class UndertowApplicationCallHandler(
     private val application: Application,
     private val environment: ApplicationEnvironment,
-    override val coroutineContext: CoroutineContext
+    userCoroutineContext: CoroutineContext
 ) : HttpHandler, CoroutineScope {
+    
+    override val coroutineContext: CoroutineContext = userCoroutineContext + SupervisorJob()
+    
     override fun handleRequest(exchange: HttpServerExchange) {
-        // Dispatch to worker thread to avoid blocking I/O thread
+        // Prevent Undertow from automatically ending the exchange
         if (exchange.isInIoThread) {
-            exchange.dispatch(this)
+            exchange.dispatch(this::handleRequest)
             return
         }
         
-        // Create Ktor application call from Undertow exchange
         val call = UndertowApplicationCall(application, exchange)
         
-        // Use runBlocking to ensure the exchange doesn't complete until processing is done
-        runBlocking(coroutineContext) {
+        // Create context with Undertow dispatcher and current exchange
+        val callContext = coroutineContext + 
+                         UndertowDispatcher + 
+                         UndertowDispatcher.CurrentContext(exchange) +
+                         CoroutineName("undertow-call")
+        
+        // Launch with structured concurrency using the Undertow dispatcher
+        launch(callContext, start = CoroutineStart.UNDISPATCHED) {
             try {
                 application.execute(call)
             } catch (error: Throwable) {
@@ -48,6 +57,15 @@ internal class UndertowApplicationCallHandler(
                     (call.response as UndertowApplicationResponse).finishResponse()
                 } catch (finishError: Throwable) {
                     environment.log.debug("Error finishing response", finishError)
+                }
+                
+                // End the exchange after processing is complete
+                try {
+                    if (!exchange.isResponseComplete) {
+                        exchange.endExchange()
+                    }
+                } catch (endError: Throwable) {
+                    environment.log.debug("Error ending exchange", endError)
                 }
             }
         }

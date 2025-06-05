@@ -13,6 +13,7 @@ import io.ktor.utils.io.*
 import io.undertow.server.*
 import io.undertow.util.*
 import kotlinx.coroutines.*
+import java.io.OutputStream
 import java.nio.*
 import kotlin.coroutines.*
 
@@ -46,10 +47,17 @@ internal class UndertowApplicationResponse(
     
     override suspend fun responseChannel(): ByteWriteChannel {
         if (_responseChannel == null) {
+            // Ensure we're on a worker thread and blocking mode is enabled
+            if (exchange.isInIoThread) {
+                throw IllegalStateException("Cannot access response channel from I/O thread")
+            }
+            
             if (!exchange.isBlocking) {
                 exchange.startBlocking()
             }
-            _responseChannel = exchange.outputStream.toByteWriteChannel(this@UndertowApplicationResponse)
+            
+            // Create a ByteWriteChannel that writes directly to Undertow's OutputStream
+            _responseChannel = exchange.outputStream.toByteWriteChannel()
         }
         return _responseChannel!!
     }
@@ -58,12 +66,49 @@ internal class UndertowApplicationResponse(
         // Ensure response channel is flushed and closed if it was created
         _responseChannel?.let { channel ->
             try {
-                channel.flushAndClose()
+                if (!channel.isClosedForWrite) {
+                    channel.flushAndClose()
+                }
             } catch (e: Exception) {
                 // Response channel might already be closed
             }
         }
+        responseSent = true
     }
+}
+
+/**
+ * Convert OutputStream to ByteWriteChannel using a simple approach
+ */
+private fun OutputStream.toByteWriteChannel(): ByteWriteChannel {
+    val outputStream = this
+    val channel = ByteChannel()
+    
+    // Use GlobalScope to avoid cancellation issues during response writing
+    GlobalScope.launch(Dispatchers.IO) {
+        try {
+            val buffer = ByteArray(8192)
+            while (!channel.isClosedForRead) {
+                val bytesRead = channel.readAvailable(buffer)
+                if (bytesRead == -1) break
+                if (bytesRead > 0) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    outputStream.flush()
+                } else {
+                    yield()
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore exceptions during copy
+        } finally {
+            try {
+                outputStream.flush()
+            } catch (ignored: Exception) {
+            }
+        }
+    }
+    
+    return channel
 }
 
 /**
@@ -86,45 +131,3 @@ private class UndertowResponseHeaders(private val exchange: HttpServerExchange) 
     }
 }
 
-/**
- * Extension to convert Undertow's OutputStream to ByteWriteChannel using structured concurrency
- */
-private fun java.io.OutputStream.toByteWriteChannel(scope: CoroutineScope): ByteWriteChannel {
-    val outputStream = this
-    val channel = ByteChannel()
-    
-    // Use structured concurrency with proper parent scope
-    val job = scope.launch(Dispatchers.IO) {
-        try {
-            val buffer = ByteArray(8192)
-            while (!channel.isClosedForRead) {
-                val bytesRead = channel.readAvailable(buffer)
-                if (bytesRead == -1) break
-                if (bytesRead > 0) {
-                    outputStream.write(buffer, 0, bytesRead)
-                    outputStream.flush()
-                }
-                if (bytesRead == 0) {
-                    yield() // Avoid busy waiting
-                }
-            }
-        } catch (e: Exception) {
-            // Handle exceptions silently
-        } finally {
-            try {
-                outputStream.flush()
-                outputStream.close()
-            } catch (ignored: Exception) {
-            }
-        }
-    }
-    
-    // Return a wrapper that properly handles completion
-    return object : ByteWriteChannel by channel {
-        override suspend fun flushAndClose() {
-            channel.flushAndClose()
-            // Wait for completion without blocking
-            job.join()
-        }
-    }
-}

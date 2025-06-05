@@ -40,7 +40,27 @@ internal class UndertowApplicationResponse(
     }
 
     override suspend fun respondUpgrade(upgrade: OutgoingContent.ProtocolUpgrade) {
-        throw UnsupportedOperationException("Protocol upgrade is not supported in Undertow engine")
+        // Set status to 101 Switching Protocols
+        setStatus(HttpStatusCode.SwitchingProtocols)
+        
+        // Set upgrade headers directly on the exchange to avoid Ktor's header restrictions
+        upgrade.headers.forEach { name, values ->
+            values.forEach { value ->
+                // Use Undertow's response headers directly to bypass Ktor restrictions
+                exchange.responseHeaders.add(io.undertow.util.HttpString.tryFromString(name), value)
+            }
+        }
+        
+        // Use Undertow's proper upgrade mechanism
+        val upgradeListener = UndertowUpgradeListener(upgrade, coroutineContext, call.application.environment.log)
+        
+        // Set the upgrade listener on the exchange
+        exchange.upgradeChannel { connection, _ ->
+            upgradeListener.handleUpgrade(connection, exchange)
+        }
+        
+        // End the exchange to trigger the upgrade
+        exchange.endExchange()
     }
 
     private var _responseChannel: ByteWriteChannel? = null
@@ -84,18 +104,38 @@ private fun OutputStream.toByteWriteChannel(): ByteWriteChannel {
     val outputStream = this
     val channel = ByteChannel()
     
-    // Use GlobalScope to avoid cancellation issues during response writing
-    GlobalScope.launch(Dispatchers.IO) {
+    // Use a proper coroutine scope with timeout to avoid hanging
+    CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
         try {
             val buffer = ByteArray(8192)
             while (!channel.isClosedForRead) {
-                val bytesRead = channel.readAvailable(buffer)
-                if (bytesRead == -1) break
-                if (bytesRead > 0) {
-                    outputStream.write(buffer, 0, bytesRead)
-                    outputStream.flush()
-                } else {
-                    yield()
+                val bytesRead = try {
+                    withTimeout(5000) { // 5 second timeout
+                        channel.readAvailable(buffer)
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    // Timeout reading from channel
+                    break
+                } catch (e: Exception) {
+                    // Channel closed or error
+                    break
+                }
+                
+                when {
+                    bytesRead == -1 -> break // End of stream
+                    bytesRead > 0 -> {
+                        try {
+                            outputStream.write(buffer, 0, bytesRead)
+                            outputStream.flush()
+                        } catch (e: Exception) {
+                            // Output stream closed
+                            break
+                        }
+                    }
+                    else -> {
+                        // No data available, yield to avoid busy waiting
+                        delay(1)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -104,6 +144,7 @@ private fun OutputStream.toByteWriteChannel(): ByteWriteChannel {
             try {
                 outputStream.flush()
             } catch (ignored: Exception) {
+                // Ignore flush errors
             }
         }
     }

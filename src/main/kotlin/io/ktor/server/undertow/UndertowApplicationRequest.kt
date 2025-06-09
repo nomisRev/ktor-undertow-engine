@@ -9,9 +9,8 @@ import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.request.*
 import io.ktor.utils.io.*
-import io.ktor.util.*
+import io.ktor.util.logging.Logger
 import io.undertow.server.*
-import io.undertow.server.handlers.Cookie
 import io.undertow.util.*
 import kotlinx.coroutines.*
 import kotlin.coroutines.*
@@ -34,7 +33,7 @@ internal class UndertowApplicationRequest(
         }
         
         if (exchange.isRequestChannelAvailable) {
-            exchange.inputStream.toByteReadChannel(this@UndertowApplicationRequest)
+            exchange.inputStream.toByteReadChannel(this@UndertowApplicationRequest, call.application.environment.log)
         } else {
             ByteReadChannel.Empty
         }
@@ -87,10 +86,10 @@ private class UndertowRequestHeaders(private val exchange: HttpServerExchange) :
  */
 private class UndertowRequestCookies(private val undertowRequest: UndertowApplicationRequest) : RequestCookies(undertowRequest) {
     override fun fetchCookies(): Map<String, String> {
-        val cookies = undertowRequest.exchange.requestCookies
+        val cookies = undertowRequest.exchange.requestCookies()
         return if (cookies != null) {
             val result = mutableMapOf<String, String>()
-            for (cookie in cookies.values) {
+            for (cookie in cookies) {
                 result[cookie.name] = cookie.value
             }
             result
@@ -123,7 +122,7 @@ private class UndertowRequestConnectionPoint(private val exchange: HttpServerExc
 /**
  * Extension to convert Undertow's InputStream to ByteReadChannel using structured concurrency
  */
-private fun java.io.InputStream.toByteReadChannel(scope: CoroutineScope): ByteReadChannel {
+private fun java.io.InputStream.toByteReadChannel(scope: CoroutineScope, logger: Logger): ByteReadChannel {
     val inputStream = this
     return scope.writer(Dispatchers.IO) {
         val buffer = ByteArray(8192)
@@ -138,12 +137,13 @@ private fun java.io.InputStream.toByteReadChannel(scope: CoroutineScope): ByteRe
                 }
                 channel.writeFully(buffer, 0, bytesRead)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             channel.close(e)
         } finally {
             try {
                 inputStream.close()
             } catch (ignored: Exception) {
+                logger.error("Failed to close input stream", ignored)
             }
         }
     }.channel

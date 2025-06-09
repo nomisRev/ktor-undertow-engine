@@ -54,7 +54,7 @@ internal class UndertowApplicationCallHandler(
             } finally {
                 // Ensure response is properly finished
                 try {
-                    (call.response as UndertowApplicationResponse).finishResponse()
+                    call.response.finishResponse()
                 } catch (finishError: Throwable) {
                     environment.log.debug("Error finishing response", finishError)
                 }

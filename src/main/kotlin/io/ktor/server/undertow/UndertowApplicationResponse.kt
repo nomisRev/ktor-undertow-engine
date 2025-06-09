@@ -84,15 +84,7 @@ internal class UndertowApplicationResponse(
     
     suspend fun finishResponse() {
         // Ensure response channel is flushed and closed if it was created
-        _responseChannel?.let { channel ->
-            try {
-                if (!channel.isClosedForWrite) {
-                    channel.flushAndClose()
-                }
-            } catch (e: Exception) {
-                // Response channel might already be closed
-            }
-        }
+        _responseChannel?.flushAndClose()
         responseSent = true
     }
 }
